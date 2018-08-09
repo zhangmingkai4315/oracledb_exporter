@@ -3,8 +3,10 @@ package main
 import (
 	"database/sql"
 	"flag"
+	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -140,26 +142,415 @@ func (e *Exporter) scrape(ch chan<- prometheus.Metric) {
 	isUpRows.Close()
 	e.up.Set(1)
 
+	if err = ScrapeVersion(db, ch); err != nil {
+		log.Errorln("Error scraping for version:", err)
+		e.scrapeErrors.WithLabelValues("version").Inc()
+	}
+
+	if err = ScrapeDBARegistry(db, ch); err != nil {
+		log.Errorln("Error scraping for version:", err)
+		e.scrapeErrors.WithLabelValues("dbaRegistry").Inc()
+	}
+
+	if err = ScrapeHighWaterMarkStatics(db, ch); err != nil {
+		log.Errorln("Error scraping for version:", err)
+		e.scrapeErrors.WithLabelValues("highWaterMarkStatics").Inc()
+	}
+	if err = ScrapeInstanceOverview(db, ch); err != nil {
+		log.Errorln("Error scraping for version:", err)
+		e.scrapeErrors.WithLabelValues("instanceOverview").Inc()
+	}
+
+	if err = ScrapeDatabaseOverview(db, ch); err != nil {
+		log.Errorln("Error scraping for version:", err)
+		e.scrapeErrors.WithLabelValues("databaseOverview").Inc()
+	}
+
 	if err = ScrapeActivity(db, ch); err != nil {
 		log.Errorln("Error scraping for activity:", err)
 		e.scrapeErrors.WithLabelValues("activity").Inc()
+	}
+	if err = ScrapeSPFile(db, ch); err != nil {
+		log.Errorln("Error scraping for activity:", err)
+		e.scrapeErrors.WithLabelValues("spfile").Inc()
+	}
+
+	if err = ScrapeControlFiles(db, ch); err != nil {
+		log.Errorln("Error scraping for activity:", err)
+		e.scrapeErrors.WithLabelValues("controlfiles").Inc()
+	}
+	if err = ScrapeRedoLogSwitch(db, ch); err != nil {
+		log.Errorln("Error scraping for activity:", err)
+		e.scrapeErrors.WithLabelValues("redologswitch").Inc()
+	}
+	if err = ScrapeOnlineRedoLog(db, ch); err != nil {
+		log.Errorln("Error scraping for activity:", err)
+		e.scrapeErrors.WithLabelValues("redologbytes").Inc()
 	}
 
 	if err = ScrapeTablespace(db, ch); err != nil {
 		log.Errorln("Error scraping for tablespace:", err)
 		e.scrapeErrors.WithLabelValues("tablespace").Inc()
 	}
-
-	if err = ScrapeWaitTime(db, ch); err != nil {
-		log.Errorln("Error scraping for wait_time:", err)
-		e.scrapeErrors.WithLabelValues("wait_time").Inc()
+	if err = ScrapeInvalidObjectTotal(db, ch); err != nil {
+		log.Errorln("Error scraping for invalid object:", err)
+		e.scrapeErrors.WithLabelValues("invalidtotal").Inc()
 	}
+	// if err = ScrapeWaitTime(db, ch); err != nil {
+	// 	log.Errorln("Error scraping for wait_time:", err)
+	// 	e.scrapeErrors.WithLabelValues("wait_time").Inc()
+	// }
 
 	if err = ScrapeSessions(db, ch); err != nil {
 		log.Errorln("Error scraping for sessions:", err)
 		e.scrapeErrors.WithLabelValues("sessions").Inc()
 	}
 
+}
+
+// ScrapeVersion collect core, oracle ,NLSRTL, PL/SQL version info
+func ScrapeVersion(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("SELECT * FROM v$version")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var version string
+		if err = rows.Scan(&version); err != nil {
+			return err
+		}
+		version = strings.Replace(version, "\t", " ", -1)
+		name := strings.Split(version, " ")[0]
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "version", "info"),
+				"Metrics for version of oracledb", []string{"name", "version"}, nil),
+			prometheus.GaugeValue,
+			1.0,
+			name,
+			version,
+		)
+	}
+	return nil
+}
+
+// ScrapeDBARegistry collect core, oracle ,NLSRTL, PL/SQL version info
+func ScrapeDBARegistry(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("select comp_id,comp_name,version,status,modified,control,schema,procedure from dba_registry ORDER BY comp_name")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			compID    string
+			compName  string
+			version   string
+			status    string
+			modified  string
+			control   string
+			schema    string
+			procedure string
+		)
+		if err = rows.Scan(&compID, &compName, &version, &status, &modified, &control, &schema, &procedure); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "dba", "registry"),
+				"Metrics for dba registry of oracledb", []string{"comp_id", "comp_name", "version", "status", "modified", "control", "schema", "procedure"}, nil),
+			prometheus.GaugeValue,
+			1.0,
+			compID, compName, version, status, modified, control, schema, procedure,
+		)
+	}
+	return nil
+}
+
+// ScrapeHighWaterMarkStatics collect high water mark info
+func ScrapeHighWaterMarkStatics(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("SELECT  name \"statistic_name\",highwater highwater , last_value last_value , description description FROM dba_high_water_mark_statistics ORDER BY name")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			name        string
+			highwater   sql.NullFloat64
+			lastValue   sql.NullFloat64
+			description sql.NullString
+		)
+		if err = rows.Scan(&name, &highwater, &lastValue, &description); err != nil {
+
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "highwatermark", "mark"),
+				"High water mark  infomation", []string{"name"}, nil),
+			prometheus.GaugeValue,
+			highwater.Float64,
+			name,
+		)
+
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "highwatermark", "last_value"),
+				"High water mark statistics infomation with last value", []string{"name"}, nil),
+			prometheus.GaugeValue,
+			lastValue.Float64,
+			name,
+		)
+	}
+	return nil
+}
+
+// ScrapeInstanceOverview collect instance overview information
+func ScrapeInstanceOverview(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("select instance_name,instance_number,thread#,host_name,version,startup_time,parallel,status,logins,archiver  from gv$instance")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			name        string
+			number      float64
+			thread      int
+			host        string
+			version     string
+			startUpTime string
+			parallel    string
+			status      string
+			logins      string
+			archiver    string
+		)
+		if err = rows.Scan(&name, &number, &thread,
+			&host, &version, &startUpTime, &parallel, &status, &logins, &archiver); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "instance", "info"),
+				"instance overview and number", []string{"name", "thread", "host", "version", "startUpTime", "parallel", "status", "logins", "archiver"}, nil),
+			prometheus.GaugeValue,
+			number,
+			name,
+			fmt.Sprint(thread),
+			host,
+			version,
+			startUpTime,
+			parallel,
+			status,
+			logins,
+			archiver,
+		)
+	}
+	return nil
+}
+
+// ScrapeDatabaseOverview collect instance overview information
+func ScrapeDatabaseOverview(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("select name,db_unique_name,dbid,open_mode,created,platform_name,database_role,controlfile_type,current_scn,log_mode,FORCE_LOGGING,flashback_on from v$database")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			name            string
+			uniqueName      string
+			dbid            float64
+			openMode        string
+			created         string
+			platformName    string
+			role            string
+			controlfileType string
+			currentSCN      string
+			logMode         string
+			forceLogging    string
+			flashback       string
+		)
+		if err = rows.Scan(&name, &uniqueName, &dbid,
+			&openMode, &created, &platformName, &role,
+			&controlfileType, &currentSCN, &logMode, &forceLogging, &flashback); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "database", "info"),
+				"database overview and number", []string{"name", "db_unique_name", "dbid",
+					"open_mode", "created", "platform_name", "database_role",
+					"controlfile_type", "current_scn", "log_mode", "FORCE_LOGGING", "flashback_on"}, nil),
+			prometheus.GaugeValue,
+			1,
+			name,
+			uniqueName,
+			fmt.Sprint(dbid),
+			openMode,
+			created,
+			platformName,
+			role,
+			controlfileType,
+			currentSCN,
+			logMode,
+			forceLogging,
+			flashback,
+		)
+	}
+	return nil
+}
+
+// ScrapeSPFile collect database if it using spfile
+func ScrapeSPFile(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("select (1-SIGN(1-SIGN(count(*) - 0))) FROM v$spparameter WHERE value IS NOT null")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var usingSPF float64
+		if err = rows.Scan(&usingSPF); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "using", "spfile"),
+				"Metrics for get if the database using spf", []string{}, nil),
+			prometheus.GaugeValue,
+			usingSPF,
+		)
+	}
+	return nil
+}
+
+// ScrapeControlFiles collect instance control files information
+func ScrapeControlFiles(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("select name,DECODE( c.status,NULL,'VALID','' || c.status || '') status,''|| TO_CHAR(block_size * file_size_blks, '999999999999') || '' file_size  from v$controlfile c ORDER BY c.name")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			name     string
+			status   string
+			fileSize string
+		)
+		if err = rows.Scan(&name, &status, &fileSize); err != nil {
+			return err
+		}
+		fileSizeFloat64, err := strconv.ParseFloat(strings.Replace(fileSize, " ", "", -1), 64)
+		if err != nil {
+			fileSizeFloat64 = -1
+		}
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "control", "file"),
+				"control file and status infomation", []string{"name", "status"}, nil),
+			prometheus.GaugeValue,
+			fileSizeFloat64,
+			name,
+			status,
+		)
+	}
+	return nil
+}
+
+// ScrapeOnlineRedoLog collect online redo file information
+func ScrapeOnlineRedoLog(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("SELECT '' || i.instance_name || '' instance_name_print, '' || i.thread# || '' thread_number_print,f.group# groupno,'' || f.member || '' member,f.type redo_file_type,DECODE( l.status,'CURRENT','' || l.status || '','' || l.status || '') log_status,l.bytes bytes, '' || l.archived || '' archived FROM gv$logfile f ,gv$log l, gv$instance i WHERE f.group# = l.group# AND l.thread# = i.thread# AND i.inst_id = f.inst_id AND f.inst_id = l.inst_id ORDER BY i.instance_name , f.group# , f.member")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			name     string
+			thread   string
+			group    string
+			member   string
+			fileType string
+			status   string
+			bytes    float64
+			archived string
+		)
+		if err = rows.Scan(
+			&name, &thread, &group, &member, &fileType,
+			&status, &bytes, &archived); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "redolog", "bytes"),
+				"online redo file infomation", []string{"name", "thread", "group", "member", "fileType", "status", "archived"}, nil),
+			prometheus.GaugeValue,
+			bytes,
+			name,
+			thread,
+			group,
+			member,
+			fileType,
+			status,
+			archived,
+		)
+	}
+	return nil
+}
+
+// ScrapeRedoLogSwitch collect redo switch informations
+func ScrapeRedoLogSwitch(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("SELECT ''|| SUBSTR(TO_CHAR(first_time, 'yyyy-MM-DD HH:MI:SS'),1,7) ||'' \"DATE\",count(*) TOTAL from v$log_history group by SUBSTR(TO_CHAR(first_time, 'yyyy-MM-DD HH:MI:SS'),1,7) ORDER BY SUBSTR(TO_CHAR(first_time, 'yyyy-MM-DD HH:MI:SS'),1,7)")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			date  string
+			total float64
+		)
+		if err = rows.Scan(&date, &total); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "redolog", "switchs"),
+				"Redo Log Switches", []string{"date"}, nil),
+			prometheus.GaugeValue,
+			total,
+			date,
+		)
+	}
+	return nil
 }
 
 // ScrapeSessions collects session metrics from the v$session view.
@@ -284,114 +675,91 @@ func ScrapeTablespace(db *sql.DB, ch chan<- prometheus.Metric) error {
 		err  error
 	)
 	rows, err = db.Query(`
-SELECT
-  Z.name,
-  dt.status,
-  dt.contents,
-  dt.extent_management,
-  Z.bytes,
-  Z.max_bytes,
-  Z.free_bytes
-FROM
-(
-  SELECT
-    X.name                   as name,
-    SUM(nvl(X.free_bytes,0)) as free_bytes,
-    SUM(X.bytes)             as bytes,
-    SUM(X.max_bytes)         as max_bytes
-  FROM
-    (
-      SELECT
-        ddf.tablespace_name as name,
-        ddf.status as status,
-        ddf.bytes as bytes,
-        sum(dfs.bytes) as free_bytes,
-        CASE
-          WHEN ddf.maxbytes = 0 THEN ddf.bytes
-          ELSE ddf.maxbytes
-        END as max_bytes
-      FROM
-        sys.dba_data_files ddf,
-        sys.dba_tablespaces dt,
-        sys.dba_free_space dfs
-      WHERE ddf.tablespace_name = dt.tablespace_name
-      AND ddf.file_id = dfs.file_id(+)
-      GROUP BY
-        ddf.tablespace_name,
-        ddf.file_name,
-        ddf.status,
-        ddf.bytes,
-        ddf.maxbytes
-    ) X
-  GROUP BY X.name
-  UNION ALL
-  SELECT
-    Y.name                   as name,
-    MAX(nvl(Y.free_bytes,0)) as free_bytes,
-    SUM(Y.bytes)             as bytes,
-    SUM(Y.max_bytes)         as max_bytes
-  FROM
-    (
-      SELECT
-        dtf.tablespace_name as name,
-        dtf.status as status,
-        dtf.bytes as bytes,
-        (
-          SELECT
-            ((f.total_blocks - s.tot_used_blocks)*vp.value)
-          FROM
-            (SELECT tablespace_name, sum(used_blocks) tot_used_blocks FROM gv$sort_segment WHERE  tablespace_name!='DUMMY' GROUP BY tablespace_name) s,
-            (SELECT tablespace_name, sum(blocks) total_blocks FROM dba_temp_files where tablespace_name !='DUMMY' GROUP BY tablespace_name) f,
-            (SELECT value FROM v$parameter WHERE name = 'db_block_size') vp
-          WHERE f.tablespace_name=s.tablespace_name AND f.tablespace_name = dtf.tablespace_name
-        ) as free_bytes,
-        CASE
-          WHEN dtf.maxbytes = 0 THEN dtf.bytes
-          ELSE dtf.maxbytes
-        END as max_bytes
-      FROM
-        sys.dba_temp_files dtf
-    ) Y
-  GROUP BY Y.name
-) Z, sys.dba_tablespaces dt
-WHERE
-  Z.name = dt.tablespace_name
+SELECT UPPER(F.TABLESPACE_NAME) "tablespace_name",
+            D.TOT_GROOTTE_BYTES "tablespace_size",
+            D.TOT_GROOTTE_BYTES-F.TOTAL_BYTES "tablespace_used",
+			F.TOTAL_BYTES "tablespace_free(M)"
+     FROM (SELECT TABLESPACE_NAME,
+                  ROUND(SUM(BYTES)) TOTAL_BYTES,
+                  ROUND(MAX(BYTES),2) MAX_BYTES
+           FROM SYS.DBA_FREE_SPACE
+           GROUP BY TABLESPACE_NAME) F,
+          (SELECT DD.TABLESPACE_NAME,
+                  ROUND(SUM(BYTES)) TOT_GROOTTE_BYTES
+           FROM SYS.DBA_DATA_FILES DD
+           GROUP BY DD.TABLESPACE_NAME) D
+     WHERE D.TABLESPACE_NAME=F.TABLESPACE_NAME
+     ORDER BY 2 DESC
 `)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-	tablespaceBytesDesc := prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "tablespace", "bytes"),
+	tablespaceTotalBytesDesc := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "tablespace", "total_bytes"),
 		"Generic counter metric of tablespaces bytes in Oracle.",
-		[]string{"tablespace", "type"}, nil,
+		[]string{"tablespace"}, nil,
 	)
-	tablespaceMaxBytesDesc := prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "tablespace", "max_bytes"),
+	tablespaceUsedBytesDesc := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "tablespace", "used_bytes"),
 		"Generic counter metric of tablespaces max bytes in Oracle.",
-		[]string{"tablespace", "type"}, nil,
+		[]string{"tablespace"}, nil,
 	)
 	tablespaceFreeBytesDesc := prometheus.NewDesc(
-		prometheus.BuildFQName(namespace, "tablespace", "free"),
+		prometheus.BuildFQName(namespace, "tablespace", "free_bytes"),
 		"Generic counter metric of tablespaces free bytes in Oracle.",
-		[]string{"tablespace", "type"}, nil,
+		[]string{"tablespace"}, nil,
 	)
 
 	for rows.Next() {
-		var tablespace_name string
-		var status string
-		var contents string
-		var extent_management string
-		var bytes float64
-		var max_bytes float64
-		var bytes_free float64
-
-		if err := rows.Scan(&tablespace_name, &status, &contents, &extent_management, &bytes, &max_bytes, &bytes_free); err != nil {
+		var (
+			name  string
+			total float64
+			used  float64
+			free  float64
+		)
+		if err := rows.Scan(&name, &total, &used, &free); err != nil {
 			return err
 		}
-		ch <- prometheus.MustNewConstMetric(tablespaceBytesDesc, prometheus.GaugeValue, float64(bytes), tablespace_name, contents)
-		ch <- prometheus.MustNewConstMetric(tablespaceMaxBytesDesc, prometheus.GaugeValue, float64(max_bytes), tablespace_name, contents)
-		ch <- prometheus.MustNewConstMetric(tablespaceFreeBytesDesc, prometheus.GaugeValue, float64(bytes_free), tablespace_name, contents)
+		ch <- prometheus.MustNewConstMetric(tablespaceTotalBytesDesc, prometheus.GaugeValue, float64(total), name)
+		ch <- prometheus.MustNewConstMetric(tablespaceUsedBytesDesc, prometheus.GaugeValue, float64(used), name)
+		ch <- prometheus.MustNewConstMetric(tablespaceFreeBytesDesc, prometheus.GaugeValue, float64(free), name)
+	}
+	return nil
+}
+
+// ScrapeInvalidObjectTotal collects invalid object total.
+func ScrapeInvalidObjectTotal(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	rows, err = db.Query("select count(*) from dba_objects where status = 'INVALID'")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	invalidTotalDesc := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "invalid", "total"),
+		"Generic invalid total count.",
+		[]string{"name"}, nil,
+	)
+	var count float64
+	for rows.Next() {
+		if err := rows.Scan(&count); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(invalidTotalDesc, prometheus.GaugeValue, float64(count), "objects")
+	}
+	rows, err = db.Query("select count(*) from dba_indexes where status <> upper('VALID') AND OWNER NOT LIKE 'SYS%'")
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		if err := rows.Scan(&count); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(invalidTotalDesc, prometheus.GaugeValue, float64(count), "indexes")
 	}
 	return nil
 }
