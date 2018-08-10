@@ -18,10 +18,11 @@ import (
 
 var (
 	// Version will be set at build time.
-	Version       = "0.0.0.dev"
-	listenAddress = flag.String("web.listen-address", ":9161", "Address to listen on for web interface and telemetry.")
-	metricPath    = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
-	landingPage   = []byte("<html><head><title>Oracle DB Exporter " + Version + "</title></head><body><h1>Oracle DB Exporter " + Version + "</h1><p><a href='" + *metricPath + "'>Metrics</a></p></body></html>")
+	Version         = "0.0.0.dev"
+	listenAddress   = flag.String("web.listen-address", ":9161", "Address to listen on for web interface and telemetry.")
+	metricPath      = flag.String("web.telemetry-path", "/metrics", "Path under which to expose metrics.")
+	dataGuardBackup = flag.Bool("dataguard.backup", false, "Dataguard backup database")
+	landingPage     = []byte("<html><head><title>Oracle DB Exporter " + Version + "</title></head><body><h1>Oracle DB Exporter " + Version + "</h1><p><a href='" + *metricPath + "'>Metrics</a></p></body></html>")
 )
 
 // Metric name parts.
@@ -77,17 +78,6 @@ func NewExporter(dsn string) *Exporter {
 
 // Describe describes all the metrics exported by the MS SQL exporter.
 func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
-	// We cannot know in advance what metrics the exporter will generate
-	// So we use the poor man's describe method: Run a collect
-	// and send the descriptors of all the collected metrics. The problem
-	// here is that we need to connect to the Oracle DB. If it is currently
-	// unavailable, the descriptors will be incomplete. Since this is a
-	// stand-alone exporter and not used as a library within other code
-	// implementing additional metrics, the worst that can happen is that we
-	// don't detect inconsistent metrics created by this exporter
-	// itself. Also, a change in the monitored Oracle instance may change the
-	// exported metrics during the runtime of the exporter.
-
 	metricCh := make(chan prometheus.Metric)
 	doneCh := make(chan struct{})
 
@@ -148,21 +138,22 @@ func (e *Exporter) scrape(ch chan<- prometheus.Metric) {
 	}
 
 	if err = ScrapeDBARegistry(db, ch); err != nil {
-		log.Errorln("Error scraping for version:", err)
+		log.Errorln("Error scraping for DBARegistry:", err)
 		e.scrapeErrors.WithLabelValues("dbaRegistry").Inc()
 	}
 
 	if err = ScrapeHighWaterMarkStatics(db, ch); err != nil {
-		log.Errorln("Error scraping for version:", err)
+		log.Errorln("Error scraping for highWaterMarkStatics:", err)
 		e.scrapeErrors.WithLabelValues("highWaterMarkStatics").Inc()
 	}
+
 	if err = ScrapeInstanceOverview(db, ch); err != nil {
-		log.Errorln("Error scraping for version:", err)
+		log.Errorln("Error scraping for InstanceOverview:", err)
 		e.scrapeErrors.WithLabelValues("instanceOverview").Inc()
 	}
 
 	if err = ScrapeDatabaseOverview(db, ch); err != nil {
-		log.Errorln("Error scraping for version:", err)
+		log.Errorln("Error scraping for DatabaseOverview:", err)
 		e.scrapeErrors.WithLabelValues("databaseOverview").Inc()
 	}
 
@@ -171,20 +162,20 @@ func (e *Exporter) scrape(ch chan<- prometheus.Metric) {
 		e.scrapeErrors.WithLabelValues("activity").Inc()
 	}
 	if err = ScrapeSPFile(db, ch); err != nil {
-		log.Errorln("Error scraping for activity:", err)
+		log.Errorln("Error scraping for check SPFile:", err)
 		e.scrapeErrors.WithLabelValues("spfile").Inc()
 	}
 
 	if err = ScrapeControlFiles(db, ch); err != nil {
-		log.Errorln("Error scraping for activity:", err)
+		log.Errorln("Error scraping for ControlFiles:", err)
 		e.scrapeErrors.WithLabelValues("controlfiles").Inc()
 	}
 	if err = ScrapeRedoLogSwitch(db, ch); err != nil {
-		log.Errorln("Error scraping for activity:", err)
+		log.Errorln("Error scraping for RedoLogSwitch:", err)
 		e.scrapeErrors.WithLabelValues("redologswitch").Inc()
 	}
 	if err = ScrapeOnlineRedoLog(db, ch); err != nil {
-		log.Errorln("Error scraping for activity:", err)
+		log.Errorln("Error scraping for OnlineRedoLog:", err)
 		e.scrapeErrors.WithLabelValues("redologbytes").Inc()
 	}
 
@@ -196,10 +187,10 @@ func (e *Exporter) scrape(ch chan<- prometheus.Metric) {
 		log.Errorln("Error scraping for invalid object:", err)
 		e.scrapeErrors.WithLabelValues("invalidtotal").Inc()
 	}
-	// if err = ScrapeWaitTime(db, ch); err != nil {
-	// 	log.Errorln("Error scraping for wait_time:", err)
-	// 	e.scrapeErrors.WithLabelValues("wait_time").Inc()
-	// }
+	if err = ScrapeDataGuardStatus(db, ch); err != nil {
+		log.Errorln("Error scraping for dataguard:", err)
+		e.scrapeErrors.WithLabelValues("dataguard").Inc()
+	}
 
 	if err = ScrapeSessions(db, ch); err != nil {
 		log.Errorln("Error scraping for sessions:", err)
@@ -468,7 +459,7 @@ func ScrapeControlFiles(db *sql.DB, ch chan<- prometheus.Metric) error {
 			fileSizeFloat64 = -1
 		}
 		ch <- prometheus.MustNewConstMetric(
-			prometheus.NewDesc(prometheus.BuildFQName(namespace, "control", "file"),
+			prometheus.NewDesc(prometheus.BuildFQName(namespace, "controlfile", "bytes"),
 				"control file and status infomation", []string{"name", "status"}, nil),
 			prometheus.GaugeValue,
 			fileSizeFloat64,
@@ -611,34 +602,6 @@ func ScrapeSessions(db *sql.DB, ch chan<- prometheus.Metric) error {
 	return nil
 }
 
-// ScrapeWaitTime collects wait time metrics from the v$waitclassmetric view.
-func ScrapeWaitTime(db *sql.DB, ch chan<- prometheus.Metric) error {
-	var (
-		rows *sql.Rows
-		err  error
-	)
-	rows, err = db.Query("SELECT n.wait_class, round(m.time_waited/m.INTSIZE_CSEC,3) AAS from v$waitclassmetric  m, v$system_wait_class n where m.wait_class_id=n.wait_class_id and n.wait_class != 'Idle'")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var name string
-		var value float64
-		if err := rows.Scan(&name, &value); err != nil {
-			return err
-		}
-		name = cleanName(name)
-		ch <- prometheus.MustNewConstMetric(
-			prometheus.NewDesc(prometheus.BuildFQName(namespace, "wait_time", name),
-				"Generic counter metric from v$waitclassmetric view in Oracle.", []string{}, nil),
-			prometheus.CounterValue,
-			value,
-		)
-	}
-	return nil
-}
-
 // ScrapeActivity collects activity metrics from the v$sysstat view.
 func ScrapeActivity(db *sql.DB, ch chan<- prometheus.Metric) error {
 	var (
@@ -760,6 +723,84 @@ func ScrapeInvalidObjectTotal(db *sql.DB, ch chan<- prometheus.Metric) error {
 			return err
 		}
 		ch <- prometheus.MustNewConstMetric(invalidTotalDesc, prometheus.GaugeValue, float64(count), "indexes")
+	}
+	return nil
+}
+
+// ScrapeDataGuardStatus collects dataguard information total.
+func ScrapeDataGuardStatus(db *sql.DB, ch chan<- prometheus.Metric) error {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	dataGuardSequenceDesc := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "dataguard", "sequence"),
+		"Generic Sequence from dataguard.",
+		[]string{"group", "thread", "status"}, nil,
+	)
+	dataGuardBytesDesc := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "dataguard", "bytes"),
+		"Generic bytes information from dataguard.",
+		[]string{"group", "thread", "status"}, nil,
+	)
+	dataGuardMaxSequenceDesc := prometheus.NewDesc(
+		prometheus.BuildFQName(namespace, "dataguard", "max_sequence"),
+		"Generic max sequence information from dataguard.",
+		[]string{"thread"}, nil,
+	)
+	rows, err = db.Query("select a.GROUP#,THREAD#,SEQUENCE#,BYTES \"bytes\",a.status from v$log a,v$logfile b where a.GROUP#=b.GROUP# and a.status='CURRENT' order by 1,2")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var (
+		group    string
+		thread   string
+		sequence float64
+		bytes    float64
+		status   string
+	)
+	for rows.Next() {
+		if err := rows.Scan(&group, &thread, &sequence, &bytes, &status); err != nil {
+			return err
+		}
+		ch <- prometheus.MustNewConstMetric(
+			dataGuardSequenceDesc,
+			prometheus.GaugeValue,
+			float64(sequence),
+			group,
+			thread,
+			status)
+		ch <- prometheus.MustNewConstMetric(
+			dataGuardBytesDesc,
+			prometheus.GaugeValue,
+			float64(bytes),
+			group,
+			thread,
+			status)
+	}
+	if *dataGuardBackup == false {
+		return nil
+	}
+	rows, err = db.Query("SELECT THREAD#, MAX(SEQUENCE#) \"SEQUENCE#\" FROM V$ARCHIVED_LOG val, V$DATABASE vdb WHERE APPLIED = 'YES' AND val.RESETLOGS_CHANGE#=vdb.RESETLOGS_CHANGE#  GROUP BY THREAD#")
+	if err != nil {
+		return err
+	}
+	var (
+		threadID    string
+		maxSequence float64
+	)
+	for rows.Next() {
+		if err := rows.Scan(&threadID, &maxSequence); err != nil {
+			// Backup database only
+			return nil
+		}
+		ch <- prometheus.MustNewConstMetric(
+			dataGuardMaxSequenceDesc,
+			prometheus.GaugeValue,
+			float64(maxSequence),
+			threadID,
+		)
 	}
 	return nil
 }
