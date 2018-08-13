@@ -242,14 +242,14 @@ func ScrapeDBARegistry(db *sql.DB, ch chan<- prometheus.Metric) error {
 	defer rows.Close()
 	for rows.Next() {
 		var (
-			compID    string
-			compName  string
-			version   string
-			status    string
-			modified  string
-			control   string
-			schema    string
-			procedure string
+			compID    sql.NullString
+			compName  sql.NullString
+			version   sql.NullString
+			status    sql.NullString
+			modified  sql.NullString
+			control   sql.NullString
+			schema    sql.NullString
+			procedure sql.NullString
 		)
 		if err = rows.Scan(&compID, &compName, &version, &status, &modified, &control, &schema, &procedure); err != nil {
 			return err
@@ -259,7 +259,14 @@ func ScrapeDBARegistry(db *sql.DB, ch chan<- prometheus.Metric) error {
 				"Metrics for dba registry of oracledb", []string{"comp_id", "comp_name", "version", "status", "modified", "control", "schema", "procedure"}, nil),
 			prometheus.GaugeValue,
 			1.0,
-			compID, compName, version, status, modified, control, schema, procedure,
+			compID.String,
+			compName.String,
+			version.String,
+			status.String,
+			modified.String,
+			control.String,
+			schema.String,
+			procedure.String,
 		)
 	}
 	return nil
@@ -322,13 +329,13 @@ func ScrapeInstanceOverview(db *sql.DB, ch chan<- prometheus.Metric) error {
 			name        string
 			number      float64
 			thread      int
-			host        string
-			version     string
-			startUpTime string
-			parallel    string
-			status      string
-			logins      string
-			archiver    string
+			host        sql.NullString
+			version     sql.NullString
+			startUpTime sql.NullString
+			parallel    sql.NullString
+			status      sql.NullString
+			logins      sql.NullString
+			archiver    sql.NullString
 		)
 		if err = rows.Scan(&name, &number, &thread,
 			&host, &version, &startUpTime, &parallel, &status, &logins, &archiver); err != nil {
@@ -341,13 +348,13 @@ func ScrapeInstanceOverview(db *sql.DB, ch chan<- prometheus.Metric) error {
 			number,
 			name,
 			fmt.Sprint(thread),
-			host,
-			version,
-			startUpTime,
-			parallel,
-			status,
-			logins,
-			archiver,
+			host.String,
+			version.String,
+			startUpTime.String,
+			parallel.String,
+			status.String,
+			logins.String,
+			archiver.String,
 		)
 	}
 	return nil
@@ -367,17 +374,17 @@ func ScrapeDatabaseOverview(db *sql.DB, ch chan<- prometheus.Metric) error {
 	for rows.Next() {
 		var (
 			name            string
-			uniqueName      string
+			uniqueName      sql.NullString
 			dbid            float64
-			openMode        string
-			created         string
-			platformName    string
-			role            string
-			controlfileType string
-			currentSCN      string
-			logMode         string
-			forceLogging    string
-			flashback       string
+			openMode        sql.NullString
+			created         sql.NullString
+			platformName    sql.NullString
+			role            sql.NullString
+			controlfileType sql.NullString
+			currentSCN      sql.NullString
+			logMode         sql.NullString
+			forceLogging    sql.NullString
+			flashback       sql.NullString
 		)
 		if err = rows.Scan(&name, &uniqueName, &dbid,
 			&openMode, &created, &platformName, &role,
@@ -392,17 +399,17 @@ func ScrapeDatabaseOverview(db *sql.DB, ch chan<- prometheus.Metric) error {
 			prometheus.GaugeValue,
 			1,
 			name,
-			uniqueName,
+			uniqueName.String,
 			fmt.Sprint(dbid),
-			openMode,
-			created,
-			platformName,
-			role,
-			controlfileType,
-			currentSCN,
-			logMode,
-			forceLogging,
-			flashback,
+			openMode.String,
+			created.String,
+			platformName.String,
+			role.String,
+			controlfileType.String,
+			currentSCN.String,
+			logMode.String,
+			forceLogging.String,
+			flashback.String,
 		)
 	}
 	return nil
@@ -448,13 +455,13 @@ func ScrapeControlFiles(db *sql.DB, ch chan<- prometheus.Metric) error {
 	for rows.Next() {
 		var (
 			name     string
-			status   string
-			fileSize string
+			status   sql.NullString
+			fileSize sql.NullString
 		)
 		if err = rows.Scan(&name, &status, &fileSize); err != nil {
 			return err
 		}
-		fileSizeFloat64, err := strconv.ParseFloat(strings.Replace(fileSize, " ", "", -1), 64)
+		fileSizeFloat64, err := strconv.ParseFloat(strings.Replace(fileSize.String, " ", "", -1), 64)
 		if err != nil {
 			fileSizeFloat64 = -1
 		}
@@ -464,7 +471,7 @@ func ScrapeControlFiles(db *sql.DB, ch chan<- prometheus.Metric) error {
 			prometheus.GaugeValue,
 			fileSizeFloat64,
 			name,
-			status,
+			status.String,
 		)
 	}
 	return nil
@@ -484,13 +491,13 @@ func ScrapeOnlineRedoLog(db *sql.DB, ch chan<- prometheus.Metric) error {
 	for rows.Next() {
 		var (
 			name     string
-			thread   string
-			group    string
-			member   string
-			fileType string
-			status   string
+			thread   sql.NullString
+			group    sql.NullString
+			member   sql.NullString
+			fileType sql.NullString
+			status   sql.NullString
 			bytes    float64
-			archived string
+			archived sql.NullString
 		)
 		if err = rows.Scan(
 			&name, &thread, &group, &member, &fileType,
@@ -503,12 +510,12 @@ func ScrapeOnlineRedoLog(db *sql.DB, ch chan<- prometheus.Metric) error {
 			prometheus.GaugeValue,
 			bytes,
 			name,
-			thread,
-			group,
-			member,
-			fileType,
-			status,
-			archived,
+			thread.String,
+			group.String,
+			member.String,
+			fileType.String,
+			status.String,
+			archived.String,
 		)
 	}
 	return nil
@@ -754,11 +761,11 @@ func ScrapeDataGuardStatus(db *sql.DB, ch chan<- prometheus.Metric) error {
 	}
 	defer rows.Close()
 	var (
-		group    string
-		thread   string
+		group    sql.NullString
+		thread   sql.NullString
 		sequence float64
 		bytes    float64
-		status   string
+		status   sql.NullString
 	)
 	for rows.Next() {
 		if err := rows.Scan(&group, &thread, &sequence, &bytes, &status); err != nil {
@@ -768,16 +775,16 @@ func ScrapeDataGuardStatus(db *sql.DB, ch chan<- prometheus.Metric) error {
 			dataGuardSequenceDesc,
 			prometheus.GaugeValue,
 			float64(sequence),
-			group,
-			thread,
-			status)
+			group.String,
+			thread.String,
+			status.String)
 		ch <- prometheus.MustNewConstMetric(
 			dataGuardBytesDesc,
 			prometheus.GaugeValue,
 			float64(bytes),
-			group,
-			thread,
-			status)
+			group.String,
+			thread.String,
+			status.String)
 	}
 	if *dataGuardBackup == false {
 		return nil
